@@ -220,16 +220,34 @@ targetname(THREADID id, CONTEXT* ctx, ADDRINT target)
  * ----------------------------------------------------------------------------
  * inject_* functions are called when the trigger is found.
  * ------------------------------------------------------------------------- */
+static UINT64 ip_cnt = 0;
+static UINT64 dip_cnt = 0;
+
+static BOOL
+at_ip_iteration(THREADID id) {
+  if (!right_thread(id)) return 0;
+#ifdef VERBOSE_INFO
+  fprintf(stderr, "iter %lu, tit %lu\n", ip_cnt, tit);
+#endif /* VERBOSE_INFO */
+  return (ip_cnt == tit);
+}
+
+static void
+count_ip(THREADID id) {
+  if (!right_thread(id)) return;
+  ++ip_cnt;
+}
+
+static BOOL
+count_dip(THREADID id) {
+  if (!right_thread(id)) return 0;
+  ++dip_cnt;
+  return dip_cnt == dit;
+}
 
 static VOID
 inject_detach(THREADID id, CONTEXT* ctx)
 {
-  static unsigned int ip_cnt = 0;
-  if (!right_thread(id)) return;
-  
-  ++ip_cnt;
-  if (ip_cnt != dit) return;
-
   PIN_RemoveFiniFunctions();
   PIN_Detach();
 }
@@ -237,17 +255,11 @@ inject_detach(THREADID id, CONTEXT* ctx)
 static VOID
 inject_txt(THREADID id, CONTEXT* ctx, ADDRINT ins, ADDRINT next, UINT32 size)
 {
-  static unsigned int ip_cnt = 0;
-  if (!right_thread(id)) return;
-  
-  ++ip_cnt;
-  if (ip_cnt != tit) return;
-
   // get current IP from context
   ADDRINT ip = (ADDRINT)PIN_GetContextReg(ctx, REG_INST_PTR);
 
   // copy original function in text area
-  memcpy(text, (void*)ip, size);
+  PIN_SafeCopy(text, (void*)ip, size);
 
   // truncate mask to a single byte
   ADDRINT tmp = mask & 0xFF;
@@ -275,14 +287,14 @@ inject_txt(THREADID id, CONTEXT* ctx, ADDRINT ins, ADDRINT next, UINT32 size)
   if (mprotect(page, pg_size, PROT_WRITE | PROT_EXEC))
     DIE("cannot change access rights for code segment");
   // change the opcode in the code segment
-  memcpy((void*) ip, text, size);
+  PIN_SafeCopy((void*) ip, text, size);
   // revoke the right to write to the code segment
   if (mprotect(page, pg_size, PROT_READ | PROT_EXEC))
     DIE("cannot reset access rights for code segment");
 
   // log info
   info(ctx, id, ip, "ip' = %p, size = %u, mask = %llu, idx = %d, "
-       "byte = %u, byte' = %u",
+       "byte = 0x%x, byte' = 0x%x",
        next, size, (ULLONG) mask, idx, obyte, nbyte);
 
   // jump to context to make sure the instruction pointer is re-read
@@ -294,44 +306,46 @@ inject_txt(THREADID id, CONTEXT* ctx, ADDRINT ins, ADDRINT next, UINT32 size)
 static VOID
 inject_cf(THREADID id, CONTEXT* ctx)
 {
-  static unsigned int ip_cnt = 0;
-  if (!right_thread(id)) return;
-  
-  ++ip_cnt;
-  if (ip_cnt != tit) return;
-  
   ADDRINT ip  = (ADDRINT)PIN_GetContextReg(ctx, REG_INST_PTR);
   ADDRINT aip = ip ^ mask;
   PIN_SetContextReg(ctx, REG_INST_PTR, aip);
 
-  info(ctx, id, ip, "ip = %p, ip' = %p", (void*) ip,(void*) aip);
+  info(ctx, id, ip, "ip = %p, ip' = %p", (void*)ip, (void*)aip);
 
   // jumpt to new context
   PIN_ExecuteAt(ctx);
 }
 
-static inline uint64_t
-min(uint64_t x, uint64_t y) {
+static ADDRINT storage = 0xdeadbeef;
+static VOID
+store(CONTEXT* ctx, ADDRINT addr) {
+#ifdef VERBOSE_INFO
+  fprintf(stderr, "storing address %lx\n", addr);
+#endif /* VERBOSE_INFO */
+  storage = addr;
+}
+
+static inline UINT32
+min(UINT32 x, UINT32 y) {
   return (x < y) ? x : y;
 }
 
 static VOID
-inject_value(CONTEXT* ctx, THREADID id, ADDRINT ip, ADDRINT addr,
+inject_value(CONTEXT* ctx, THREADID id, ADDRINT ip,
              UINT32 size, UINT32 access, UINT32 op)
 {
-  static unsigned int ip_cnt = 0;
-  if (!right_thread(id)) return;
+  ADDRINT addr = storage;;
+#ifdef VERBOSE_INFO
+  fprintf(stderr, "value injection at address %lx\n", addr);
+#endif /* VERBOSE_INFO */
   
-  ++ip_cnt;
-  if (ip_cnt != tit) return;
-
   uint64_t correct = 0;
-  memcpy((void*)&correct, (void*)addr, min(size, sizeof(correct)));
+  PIN_SafeCopy((void*)&correct, (void*)addr, min(size, sizeof(correct)));
 
   uint64_t error = correct ^ mask;
-  memcpy((void*)addr, &error, min(size, sizeof(correct)));
+  PIN_SafeCopy((void*)addr, &error, min(size, sizeof(correct)));
 
-  info(ctx, id, ip, "access = %u, size = %u, value = %llu, value' = %llu,"
+  info(ctx, id, ip, "access = %u, size = %u, value = %llx, value' = %llx,"
        " addr = %p, op = %u",
        access, size,
        (ULLONG)correct, (ULLONG)error,
@@ -339,18 +353,21 @@ inject_value(CONTEXT* ctx, THREADID id, ADDRINT ip, ADDRINT addr,
 }
 
 static ADDRINT
+pass_addr(ADDRINT addr) {
+  return addr;
+}
+
+static ADDRINT
 inject_addr(CONTEXT* ctx, THREADID id, ADDRINT ip, ADDRINT addr,
             UINT32 size, UINT32 access, UINT32 op)
 {
-  static unsigned int ip_cnt = 0;
-  if (!right_thread(id)) return addr;
-  
-  ++ip_cnt;
-  if (ip_cnt != tit) return addr;
+#ifdef VERBOSE_INFO
+  fprintf(stderr, "manipulating address %lx\n", addr);
+#endif /* VERBOSE_INFO */
 
   ADDRINT addrp = addr ^ mask;
 
-  info(NULL, id, ip, "access = %u, size = %u, addr = %p, addr' = %p, op = %u",
+  info(ctx, id, ip, "access = %u, size = %u, addr = %p, addr' = %p, op = %u",
        access, size,
        (void*)addr,
        (void*)addrp,
@@ -362,12 +379,6 @@ inject_addr(CONTEXT* ctx, THREADID id, ADDRINT ip, ADDRINT addr,
 static VOID
 inject_reg(THREADID id, ADDRINT ip, CONTEXT* ctx, REG reg)
 {
-  static unsigned int ip_cnt = 0;
-  if (!right_thread(id)) return;
-  
-  ++ip_cnt;
-  if (ip_cnt != tit) return;
-  
   const string& rname = REG_StringShort(reg);
   reg = REG_FullRegName(reg);
 
@@ -384,6 +395,9 @@ inject_reg(THREADID id, ADDRINT ip, CONTEXT* ctx, REG reg)
        rname.c_str(), (void*)rvx);
 
   // jump to new context
+  // Note that re-executing the same instruction (at the same ip) within the
+  // new context leads to an additional increment of the 'ip_cnt'. This is OK
+  // since after the fault has been injected, the 'ip_cnt' is no longer needed.
   PIN_ExecuteAt(ctx);
 }
 
@@ -397,7 +411,7 @@ inject_reg(THREADID id, ADDRINT ip, CONTEXT* ctx, REG reg)
  * ------------------------------------------------------------------------- */
 
 #ifdef DISASM
-static VOID
+static inline VOID
 instrument_disasm(INS ins, VOID* v)
 {
   assembly[INS_Address(ins)] = INS_Disassemble(ins);
@@ -418,28 +432,34 @@ instrument_disasm(INS ins, VOID* v)
 }
 #endif /* DISASM */
 
-static VOID
+static inline VOID
 instrument_cf(INS ins, VOID* v)
 {
-  INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_cf,
-                 IARG_THREAD_ID,
-                 IARG_CONTEXT,
-                 IARG_END);
+  INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                   IARG_THREAD_ID,
+                   IARG_END);
+  INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_cf,
+                     IARG_THREAD_ID,
+                     IARG_CONTEXT,
+                     IARG_END);
 }
 
-static VOID
+static inline VOID
 instrument_txt(INS ins, VOID* v)
 {
-  INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_txt,
-                 IARG_THREAD_ID,
-                 IARG_CONTEXT,
-                 IARG_ADDRINT, INS_Address(ins),
-                 IARG_ADDRINT, INS_NextAddress(ins),
-                 IARG_UINT32, INS_Size(ins),
-                 IARG_END);
+  INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                   IARG_THREAD_ID,
+                   IARG_END);
+  INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_txt,
+                     IARG_THREAD_ID,
+                     IARG_CONTEXT,
+                     IARG_ADDRINT, INS_Address(ins),
+                     IARG_ADDRINT, INS_NextAddress(ins),
+                     IARG_UINT32, INS_Size(ins),
+                     IARG_END);
 }
 
-static VOID
+static inline VOID
 instrument_addr(INS ins, VOID* v)
 {
   // find possible faults in this instruction
@@ -447,7 +467,7 @@ instrument_addr(INS ins, VOID* v)
   for (UINT32 op = 0; op < INS_MemoryOperandCount(ins); op++) {
     if (INS_MemoryOperandIsRead(ins, op))
       reads.push_back(op);
-    if (INS_MemoryOperandIsWritten(ins, op) && INS_HasFallThrough(ins)) 
+    if (INS_MemoryOperandIsWritten(ins, op)) 
       writes.push_back(op);
   }
 
@@ -475,81 +495,160 @@ instrument_addr(INS ins, VOID* v)
   } else {
     DIE("FATAL: wrong injection command");
   }
+  fprintf(stderr, "op: %u, rind: %u, wind: %u\n", op, rind, wind);
         
   switch(cmd) {
-  case RVAL: /* fall through */
-  case WVAL: {
-    UINT32 ind = (cmd == RVAL) ? rind : wind;
-    UINT32 access = (cmd == RVAL) ? raccess : waccess;
-    IPOINT ipt = (cmd == RVAL) ? IPOINT_BEFORE : IPOINT_AFTER; 
+  case RVAL: {
+    UINT32 ind = rind, access = raccess;
+    
+    INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                     IARG_THREAD_ID,
+                     IARG_END);
+    INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)store,
+                       IARG_CONTEXT,
+                       IARG_MEMORYOP_EA, ind,
+                       IARG_END);
 
-    INS_InsertCall(ins, ipt, (AFUNPTR)inject_value,
-                   IARG_CONTEXT,
-                   IARG_THREAD_ID,
-                   IARG_INST_PTR,
-                   IARG_MEMORYOP_EA, ind,
-                   IARG_UINT32, INS_MemoryOperandSize(ins, ind),
-                   IARG_UINT32, access,
-                   IARG_UINT32, ind,
-                   IARG_END);
+    INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                       IARG_THREAD_ID,
+                       IARG_END);
+    INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_value,
+                       IARG_CONTEXT,
+                       IARG_THREAD_ID,
+                       IARG_INST_PTR,
+                       IARG_UINT32, INS_MemoryOperandSize(ins, ind),
+                       IARG_UINT32, access,
+                       IARG_UINT32, ind,
+                       IARG_END);
+    break;
+  }
+  case WVAL: {
+    UINT32 ind = wind, access = waccess;
+    
+    INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                     IARG_THREAD_ID,
+                     IARG_END);
+    INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)store,
+                       IARG_CONTEXT,
+                       IARG_MEMORYOP_EA, ind,
+                       IARG_END);
+
+    if (INS_HasFallThrough(ins)) {
+      INS_InsertIfCall(ins, IPOINT_AFTER, (AFUNPTR)at_ip_iteration,
+                       IARG_THREAD_ID,
+                       IARG_END);
+      INS_InsertThenCall(ins, IPOINT_AFTER, (AFUNPTR)inject_value,
+                         IARG_CONTEXT,
+                         IARG_THREAD_ID,
+                         IARG_INST_PTR,
+                         IARG_UINT32, INS_MemoryOperandSize(ins, ind),
+                         IARG_UINT32, access,
+                         IARG_UINT32, ind,
+                         IARG_END);
+    }
+    if (INS_IsBranchOrCall(ins) || INS_IsRet(ins)) {
+      // Branch and return instructions do in fact not write to memory:
+      assert(!INS_IsBranch(ins) && !INS_IsRet(ins));
+      INS_InsertIfCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)at_ip_iteration,
+                       IARG_THREAD_ID,
+                       IARG_END);
+      INS_InsertThenCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)inject_value,
+                         IARG_CONTEXT,
+                         IARG_THREAD_ID,
+                         IARG_INST_PTR,
+                         IARG_UINT32, INS_MemoryOperandSize(ins, ind),
+                         IARG_UINT32, access,
+                         IARG_UINT32, ind,
+                         IARG_END);
+    }
     break;
   }
   case RADDR: /* fall through */
   case WADDR: {
     UINT32 ind = (cmd == RADDR) ? rind : wind;
     UINT32 access = (cmd == RADDR) ? raccess : waccess;
+    if (access == 3) DIE("{R|W}ADDR is currently not reliably implemented for "
+                         "operands that simultaneously r/w memory.")
 
     REG scratch = PIN_ClaimToolRegister();
     if (scratch == REG_INVALID()) DIE("FATAL: No registers left");
 
-    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_addr,
-                   IARG_CONTEXT,
-                   IARG_THREAD_ID,
-                   IARG_INST_PTR,
+    // Populate scratch register with correct address:
+    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)pass_addr,
                    IARG_MEMORYOP_EA, ind,
-                   IARG_UINT32, INS_MemoryOperandSize(ins, ind),
-                   IARG_UINT32, access,
-                   IARG_UINT32, ind,
                    IARG_RETURN_REGS, scratch,
-                   IARG_CALL_ORDER, CALL_ORDER_LAST,
                    IARG_END);
+    // Corrupt the scratch register only if we are at the the right iteration:
+    INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                     IARG_THREAD_ID,
+                     IARG_END);
+    INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_addr,
+                       IARG_CONTEXT,
+                       IARG_THREAD_ID,
+                       IARG_INST_PTR,
+                       IARG_MEMORYOP_EA, ind,
+                       IARG_UINT32, INS_MemoryOperandSize(ins, ind),
+                       IARG_UINT32, access,
+                       IARG_UINT32, ind,
+                       IARG_RETURN_REGS, scratch,
+                       IARG_CALL_ORDER, CALL_ORDER_LAST,
+                       IARG_END);
     INS_RewriteMemoryOperand(ins, ind, scratch);
     break;
   }
   default: {
-    DIE("We should not eb here.")
+    DIE("We should not be here.")
   }
   }
 }
 
-static VOID
+static inline VOID
 instrument_rreg(INS ins, VOID* v)
 {
   if (!INS_MaxNumRRegs(ins)) DIE("FATAL: wrong injection command");
 
   UINT32 r = get_sel_or_random() % INS_MaxNumRRegs(ins);
 
-  INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_reg,
-                 IARG_THREAD_ID,
-                 IARG_INST_PTR,
-                 IARG_CONTEXT,
-                 IARG_UINT32, INS_RegR(ins, r),
-                 IARG_END);
+  INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)at_ip_iteration,
+                   IARG_THREAD_ID,
+                   IARG_END);
+  INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_reg,
+                     IARG_THREAD_ID,
+                     IARG_INST_PTR,
+                     IARG_CONTEXT,
+                     IARG_UINT32, INS_RegR(ins, r),
+                     IARG_END);
 }
 
-static VOID
+static inline VOID
 instrument_wreg(INS ins, VOID* v)
 {
-  if (!INS_HasFallThrough(ins) || !INS_MaxNumWRegs(ins)) DIE("FATAL: wrong injection command");
+  if (!INS_MaxNumWRegs(ins)) DIE("FATAL: wrong injection command");
 
   UINT32 r = get_sel_or_random() % INS_MaxNumWRegs(ins);
 
-  INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)inject_reg,
-                 IARG_THREAD_ID,
-                 IARG_INST_PTR,
-                 IARG_CONTEXT,
-                 IARG_UINT32, INS_RegW(ins, r),
-                 IARG_END);
+  if (INS_HasFallThrough(ins)) {
+    INS_InsertIfCall(ins, IPOINT_AFTER, (AFUNPTR)at_ip_iteration,
+                     IARG_THREAD_ID,
+                     IARG_END);
+    INS_InsertThenCall(ins, IPOINT_AFTER, (AFUNPTR)inject_reg,
+                       IARG_THREAD_ID,
+                       IARG_INST_PTR,
+                       IARG_CONTEXT,
+                       IARG_UINT32, INS_RegW(ins, r),
+                       IARG_END);
+  }
+  if (INS_IsBranchOrCall(ins) || INS_IsRet(ins)) {
+    INS_InsertIfCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)at_ip_iteration,
+                     IARG_THREAD_ID,
+                     IARG_END);
+    INS_InsertThenCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)inject_reg,
+                       IARG_THREAD_ID,
+                       IARG_INST_PTR,
+                       IARG_CONTEXT,
+                       IARG_UINT32, INS_RegW(ins, r),
+                       IARG_END);
+  }
 }
 /* ----------------------------------------------------------------------------
  * monitor function
@@ -564,6 +663,17 @@ instruction_info(CONTEXT* ctx, THREADID id, ADDRINT ip) {
   ++ip_iters[ip];
             
   fprintf(stderr, "ip: 0x%lX"SEPARATOR"iteration: %ld%s\n", ip, ip_iters[ip], ip_infos[ip].c_str()); 
+#ifdef VERBOSE_INFO  
+  fprintf(stderr, "[");
+  for (UINT32 i = REG_GR_BASE; i <= REG_GR_LAST; ++i) {
+    const REG r = (REG) i;
+    fprintf(stderr, "%s:%lx, ", REG_StringShort(r).c_str(), PIN_GetContextReg(ctx, r));
+  }
+  
+  fprintf(stderr, "%s:%lx, %s:%lx]\n",
+            REG_StringShort(REG_RIP).c_str(), PIN_GetContextReg(ctx, REG_RIP),
+            REG_StringShort(REG_RFLAGS).c_str(), PIN_GetContextReg(ctx, REG_RFLAGS));
+#endif /* VERBOSE_INFO */
 }
 
 static inline bool
@@ -572,7 +682,6 @@ cmd_possible(INS ins, cmd_t cmd) {
   case RREG:
     return INS_MaxNumRRegs(ins);
   case WREG:
-    if (!INS_HasFallThrough(ins)) return false;
     return INS_MaxNumWRegs(ins);
   case RVAL: /* fall through */
   case RADDR:
@@ -582,7 +691,6 @@ cmd_possible(INS ins, cmd_t cmd) {
     return false;
   case WVAL: /* fall through */
   case WADDR:
-    if (!INS_HasFallThrough(ins)) return false;
     for (UINT32 op = 0; op < INS_MemoryOperandCount(ins); op++) {
       if (INS_MemoryOperandIsWritten(ins, op)) return true;
     }
@@ -636,6 +744,8 @@ extract_info(IMG img, VOID* v) {
       }
           
       append_fmt(ip_info, SEPARATOR"fallthrough: %d", INS_HasFallThrough(ins) ? 1 : 0);
+      append_fmt(ip_info, SEPARATOR"branch-or-call: %d", INS_IsBranchOrCall(ins) ? 1 : 0);
+      append_fmt(ip_info, SEPARATOR"return: %d", INS_IsRet(ins) ? 1 : 0);
 
       // possible commands for fault injection:
       append_fmt(ip_info, SEPARATOR"cmd:");
@@ -666,13 +776,19 @@ instrument_injection(IMG img, VOID* v) {
       ADDRINT ip = INS_Address(ins);
 
       if (detach && (ip == dip)) {
-          INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_detach,
+        INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)count_dip,
                          IARG_THREAD_ID,
-                         IARG_CONTEXT,
                          IARG_END);
+        INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_detach,
+                           IARG_THREAD_ID,
+                           IARG_CONTEXT,
+                           IARG_END);
       }
 
       if (ip != tip) continue;
+      INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)count_ip,
+                     IARG_THREAD_ID,
+                     IARG_END);
 
       switch (cmd) {
       case CF:
