@@ -775,44 +775,59 @@ instrument_injection(IMG img, VOID* v) {
     for (INS ins = RTN_InsHead(foo); INS_Valid(ins); ins = INS_Next(ins)) {
       ADDRINT ip = INS_Address(ins);
 
-      if (detach && (ip == dip)) {
-        INS_InsertIfCall(ins, IPOINT_BEFORE, (AFUNPTR)count_dip,
-                         IARG_THREAD_ID,
-                         IARG_END);
-        INS_InsertThenCall(ins, IPOINT_BEFORE, (AFUNPTR)inject_detach,
-                           IARG_THREAD_ID,
-                           IARG_CONTEXT,
-                           IARG_END);
+      if (ip == tip) {
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)count_ip,
+                       IARG_THREAD_ID,
+                       IARG_END);
+
+        switch (cmd) {
+        case CF:
+            instrument_cf(ins, 0);
+            break;
+        case WADDR: /* fall through */
+        case WVAL:  /* fall through */
+        case RADDR: /* fall through */
+        case RVAL:  /* fall through */
+            instrument_addr(ins, 0);
+            break;
+        case RREG:
+            instrument_rreg(ins, 0);
+            break;
+        case WREG:
+            instrument_wreg(ins, 0);
+            break;
+        case TXT:
+            instrument_txt(ins, 0);
+            break;
+        case NONE:
+            break; // nothing to be done
+        default:
+            DIE("FATAL: Invalid command");
+        }
       }
+      // Instrumentation for detaching Pin is done last. This ensures
+      // that a fault that is injected at the last instruction before
+      // detaching can take effect:
+      if (detach && (ip == dip)) {
+        if (INS_HasFallThrough(ins)) {
+          INS_InsertIfCall(ins, IPOINT_AFTER, (AFUNPTR)count_dip,
+                           IARG_THREAD_ID,
+                           IARG_END);
+          INS_InsertThenCall(ins, IPOINT_AFTER, (AFUNPTR)inject_detach,
+                             IARG_THREAD_ID,
+                             IARG_CONTEXT,
+                             IARG_END);
+        }
+        if (INS_IsBranchOrCall(ins) || INS_IsRet(ins)) {
+          INS_InsertIfCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)count_dip,
+                           IARG_THREAD_ID,
+                           IARG_END);
+          INS_InsertThenCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)inject_detach,
+                             IARG_THREAD_ID,
+                             IARG_CONTEXT,
+                             IARG_END);
 
-      if (ip != tip) continue;
-      INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)count_ip,
-                     IARG_THREAD_ID,
-                     IARG_END);
-
-      switch (cmd) {
-      case CF:
-          instrument_cf(ins, 0);
-          break;
-      case WADDR: /* fall through */
-      case WVAL:  /* fall through */
-      case RADDR: /* fall through */
-      case RVAL:  /* fall through */
-          instrument_addr(ins, 0);
-          break;
-      case RREG:
-          instrument_rreg(ins, 0);
-          break;
-      case WREG:
-          instrument_wreg(ins, 0);
-          break;
-      case TXT:
-          instrument_txt(ins, 0);
-          break;
-      case NONE:
-          break; // nothing to be done
-      default:
-          DIE("FATAL: Invalid command");
+        }
       }
     }
     RTN_Close(foo);
