@@ -495,8 +495,7 @@ instrument_addr(INS ins, VOID* v)
   } else {
     DIE("FATAL: wrong injection command");
   }
-  fprintf(stderr, "op: %u, rind: %u, wind: %u\n", op, rind, wind);
-        
+
   switch(cmd) {
   case RVAL: {
     UINT32 ind = rind, access = raccess;
