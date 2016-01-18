@@ -566,8 +566,11 @@ instrument_addr(INS ins, VOID* v)
   case WADDR: {
     UINT32 ind = (cmd == RADDR) ? rind : wind;
     UINT32 access = (cmd == RADDR) ? raccess : waccess;
-    if (access == 3) DIE("{R|W}ADDR is currently not reliably implemented for "
-                         "operands that simultaneously r/w memory.")
+
+    // If this is a simultaneous r/w access, we simply treat the address as
+    // corrupted (e.g. fault occured during address calculation).
+    // if (access != 3) DIE("{R|W}ADDR is currently not reliably implemented for "
+    //                     "operands that simultaneously r/w memory.")
 
     REG scratch = PIN_ClaimToolRegister();
     if (scratch == REG_INVALID()) DIE("FATAL: No registers left");
