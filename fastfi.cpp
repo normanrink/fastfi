@@ -71,7 +71,7 @@ static FILE* log_file  = NULL;  // log file (NULL prints on screen)
 static double start_ts = 0;
 static unsigned seed   = 0;     // seed (0 no random)
 static unsigned iseed  = 0;     // initial seed (for logging output)
-static ADDRINT mask    = 0x1;   // error mask (determined with seed)
+static UINT64 mask    = 0x00;   // error mask (determined with seed)
 static INT32 sel       = -1;    // selector of registers (if set, ignore seed)
 static bool detach     = false; // detach after inject
 static unsigned thread = 0;     // target thread
@@ -262,11 +262,10 @@ inject_txt(THREADID id, CONTEXT* ctx, ADDRINT ins, ADDRINT next, UINT32 size)
   PIN_SafeCopy(text, (void*)ip, size);
 
   // truncate mask to a single byte
-  ADDRINT tmp = mask & 0xFF;
-  // if the mask became 0, use mask 1 instead (unless it was
-  // given as 0 from user input)
-  if (tmp == 0 && mask != 0) mask = 0x01;
-  else mask = tmp;
+  if (mask != 0) {
+    while(!(mask & 0xFF)) mask >>= 8;
+  }
+  assert(mask & 0xFF);
 
   // get target byte and make idx fit instruction size
   INT32 idx = get_sel_or_random() % size;
@@ -293,7 +292,7 @@ inject_txt(THREADID id, CONTEXT* ctx, ADDRINT ins, ADDRINT next, UINT32 size)
     DIE("cannot reset access rights for code segment");
 
   // log info
-  info(ctx, id, ip, "ip' = %p, size = %u, mask = %llu, idx = %d, "
+  info(ctx, id, ip, "ip' = %p, size = %u, mask = %lx, idx = %d, "
        "byte = 0x%x, byte' = 0x%x",
        next, size, (ULLONG) mask, idx, obyte, nbyte);
 
@@ -898,7 +897,7 @@ KNOB<UINT64> KnobSeed(
 
 KNOB<UINT64> KnobMask(
     KNOB_MODE_WRITEONCE, "pintool",
-    "mask", "0x01",
+    "mask", "0x00",
     "mask used to flip bits upon fault");
 
 KNOB<UINT64> KnobSel(
