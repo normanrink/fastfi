@@ -1,33 +1,131 @@
-# BFI: bit-flip injector
+# FastFI: fast fault injector
 
-BFI is a simple plugin for the Intel's Pin dynamic binary instrumentation tool.
-BFI injects faults in a running program by bit-flipping registers, memory
-locations.  The general command is:
+FastFI is a plug-in for [Intel's Pin Tool](https://software.intel.com/en-us/articles/pin-a-dynamic-binary-instrumentation-tool) which implements fault injection into a running program.
+FastFI is derived from the [BFI bit-flip injector](https://bitbucket.org/db7/bfi), and so is this readme file.
+Please also refer to BFI's documentation.
+The key motivation of developing FastFI was to improve the runtime of fault-injection experiments while retaining fine-grain control over injected fault.
 
-```
-pin -t bfi.so [options] -- program_under_test
-```
 
-## BFI overview 
+## Getting started
 
-In a program execution, BFI injects one single fault before or after the
-execution of a given instruction.  This instruction is called the *trigger*. 
-At the trigger instruction, a register or a memory location is selected
-depending on the *fault type* given as option.
+To build the FastFI plug-in, simply run `make` in the source directory.
+The `make` command requires that the environment variable `PIN_ROOT` be set to the directory where the Pin Tool's executable lives.
+After successfully building the plug-in, the Pin Tool can be run as follows: 
 
-BFI supports the following fault types:
+  `pin -t fastfi.so [options] -- test_program`
 
-- CF   : change instruction pointer (control-flow).
-- WVAL : some address that is written is overwritten with an arbitrary value.
-- RVAL : some address that is read is written with an arbitrary value
-         before being read.
-- WADDR: some pointer that is written is corrupted (value is correct).
-- RADDR: some pointer that is read is corrupted.
-- RREG : some register that is read is overwritten with an arbitrary value
-         before being read.
-- WREG : some register that is written is overwritten with an arbitrary value
-         after being written.
-- TXT  : change the opcode of an instruction before executing it.
+When the list of `[options]` is empty, the plug-in will not do anything.
+Most importantly, no faults will be injected.
+The above command will simply produce a short log on the terminal.
+This behaviour is inherited from BFI.
+
+
+## Overview
+
+Like the BFI plug-in, FastFI injects a single fault before or after the execution of a given instruction _Ins_.
+A fault is injected by flipping bits in one of the following locations:
+
+  - registers
+  - memory
+  - address bus
+  - instruction opcodes
+
+The following kinds of faults (_commands_ in BFI's terminology) map to the above locations:
+
+  - `CF`: a _control-flow_ fault is modelled by flipping bits in the instruction pointer (i.e. the `eip`/`rip` register) before _Ins_ is executed.
+  - `RREG`: bit-flips in a register before the register's value is read _Ins_.
+  - `WREG`: bit-flips in a register after the register's value has been written by _Ins_.
+  - `RVAL`: bit-flips in a memory location before the location's value is read by _Ins_.
+  - `WVAL`: bit-flips in a memory location after the location's value has been written by _Ins_.
+  - `RADDR`: bit-flips in an address on the address bus before _Ins_ reads from the address.
+  - `WADDR`: bit-flips in an address on the address bus before _Ins_ writes to the address.
+  - `TXT`: bit-flips in the instruction opcoe of _Ins_.
+
+A typical fault injection command will look like this:
+
+  `pin -t fastfi.so -m test_function -ip 0x400751 -it 1 -cmd CF -mask 0x1 -- test_program`
+
+This will inject a control-flow fault immediately before the instruction at address `0x400751` is executed.
+Bits in the instruction pointer are flipped by xor-ing the argument of `-mask` into the instruction pointer.
+Since `0x400751 ^ 0x1 = 0x400750`, the injected fault will cause execution of the opcode at `0x400750` instead of _Ins_.
+
+As another example, let's look at injecting a fault into one of _Ins_'s input registers:
+
+  `pin -t fastfi.so -m test_function -ip 0x400750 -it 1 -cmd RREG -mask 0x1 -- test_program`
+
+This will xor the mask '0x1' into one of the first of _Ins_'s input registers.
+If _Ins_ reads from more than one register, one can select the register for fault injection with the `-sel` command line option, e.g.
+
+  `pin -t fastfi.so -m test_function -ip 0x400750 -it 1 -cmd RREG -sel 1 -mask 0x1 -- test_program`
+
+will inject into the second of _Ins_'s input register.
+Alternatively, if the option `-seed` is given, a register will be chosen randomly, e.g.
+
+  `pin -t fastfi.so -m test_function -ip 0x400750 -it 1 -cmd RREG -seed 0xdeadbeef -mask 0x1 -- test_program`
+
+The possible command line options of FastFI are discussed in more detail in the next section.
+
+
+## Typical FastFI workflow 
+
+FastFI is designed to study the response of individual functions to faults.
+Hence the function of interest must be specified as one of the command line `[options]`:
+
+  `pin -t fastfi.so -m test_function -- test_program`
+
+Multiple functions can be speficied on the command line.
+Each of the function names must be preceded by the `-m` option.
+An annotated listing of assembly instructions which are executed by the `test_function` can be obtained by also specifying `-info` on the command line:
+
+  `pin -t fastfi.so -m test_function -info -- test_program`
+
+The first two lines of output may look like this:
+
+  ```
+  ip: 0x400750 -- iteration: 1 -- assembly: push rbp -- read: rbp rsp -- write: rsp -- fallthrough: 1 -- branch-or-call: 0 -- return: 0 -- cmd: CF WVAL WADDR RREG WREG TXT
+  ip: 0x400751 -- iteration: 1 -- assembly: mov rbp, rsp -- read: rsp -- write: rbp -- fallthrough: 1 -- branch-or-call: 0 -- return: 0 -- cmd: CF RREG WREG TXT
+  ```
+
+Each line is a list of key-value pairs corresponding to one assembly instruction.
+Key-value pairs separated by `--`, and keys are separated from values by a colon `:`.
+The meanings of values are as follows:
+
+  1. `ip`: The address of the assembly instruction (viz. _instruction poiner_).
+  
+  2. `interation`: The number of times this instruction has already been executed.
+
+  3. `assembly`: The assembly code of the current instruction.
+
+  4. `read`: A space-separated list of registers read by the current instruction.
+     (Note that this includes implicit reads such as reading the stack pointer `rsp` during a `push` instruction.)
+
+  5. `write`: A space-separated list of registers written by the current instruction.
+     (Note that this includes implicit writes such as writing the stack pointer `rsp` during a `push` instruction.)
+
+  6. `fallthrough`: A flag indicating whether the current instruction has a fall-through control path.
+     Typical instructions without a fall-through path are unconditional jumps and returns.
+
+  7. `branch-or-call`: A flag which indicates whether the current instruction is either a branch or function call.
+
+  8. `return`: A flag which indicates whether the current instruction is a return instruction.
+
+  9. `cmd`: A space-separated list of kinds of faults which can be injected at the current instruction.
+
+For operating the FastFI plug-in only the values of the keys `ip`, `iteration`, and `cmd` are relevant.
+The remaining key-value pairs are useful for debugging.
+
+
+To inject a fault into a running program, FastFI must be given a list of `[options]` which specify the location and kind of the fault which is to be injected.
+
+
+The command is valid only if the instruction address is inside the function `test_function`.
+
+the address of an instruction where the fault is to be injected.
+Henceforth we refer to this address as the `ip` (for _instruction pointer_).
+Since the same `ip` may be visited multiple times during program execution, FastFI further requires an _iteration_ to uniquely identify the dynamic instruction at which the fault is to be injected.
+If the instruction at address `ip` is executed _n_ times, then the iteration must be an integer _k_ such that 1 <= _k_ <= n.
+The fault is then injected when the instruction at `ip` is executed for the _k_-th time.
+
 
 Besides injecting faults, BFI can perform other *commands* when at a trigger
 instruction, for example, it migh simply to print the trigger address and
@@ -84,52 +182,6 @@ The complete list of trigger types follows.
 - IT : counts the number of iterations the instruction pointer contains a
        given value (via `-ip`).
 
-## Further functionality
-
-During the execution of a program, it might be useful to know if the fault is
-injected within the scope of a function or not.  The knob `-m FUNC` can be used
-to register one or multiple functions (e.g., `-m malloc -m free`).  BFI prints
-information when entering or leaving the registered functions, in particular
-the trigger counters.
-
-BFI supports multi-threading programs.  However, only one thread can inject
-faults.  To select the "faulty" thread use the `-thread THREAD` knob (by
-default thread 0 is selected).
-
-## Requirements and Compilation
-
-You'll need:
-
-- Pin (http://pintool.org/)
-- gcc
-
-Either pass `PIN_ROOT` as argument to `make`
-
-```
-make PIN_ROOT=/path/to/pin/uncompressed/zip
-```
-
-or create a `Makefile.local` file with the line:
-
-```
-PIN_ROOT=/path/to/pin/uncompressed/zip
-```
-
-## Usage Examples
-
-General command is:
-
-```
-pin -t bfi.so [options] -- program_under_test
-```
-
-### Get general information without any fault injections
-
-```
-pin -t bfi.so -log mylogfile -- ls
-```
-
-This command runs *ls* and saves general information (total amount of instructions executed, amount of time used) in *log.log*.
 
 ### List all supported knobs (command-line arguments)
 
@@ -137,100 +189,34 @@ This command runs *ls* and saves general information (total amount of instructio
 pin -t bfi.so -h -- ls
 ```
 
-### List all invocations of function `foobar`
 
-```
-pin -t bfi.so -m foobar -- ./myprogram -arg1 hello -arg2 world
-```
+### Debugging test programs under the control of FastFI (from BFI documentation)
 
-This command lists all entrance and leave points for function *foobar* in program *myprogram* (which accepts arguments *arg1* and *arg2*). Sample output:
+Start the Pin Tool with the `-appdebug` option:
 
-```
-[.:    0, IP = 0x400780, i = 89277, wa = 0, ra = 0, rr = 0, wr = 0, it = 0, t = 0]
-	enter foobar iteration = 2
-[.:    0, IP = 0x40079a, i = 89280, wa = 0, ra = 0, rr = 0, wr = 0, it = 0, t = 0]
-	leave foobar
-```
-
-indicates that function range is 0x400780 - 0x40079a, this is the second invocation of the function and it is executed on instructions 89277 - 89280.
-
-### Get information about the instruction
-
-```
-pin -t bfi.so -cmd FIND -trigger 89279 -- ./myprogram
-```
-
-The command provides one with information about actions on instruction 89279. Sample output:
-
-```
-[.:    0, IP = 0x400783, i = 89279, wa = 0, ra = 0, rr = 0, wr = 0, it = 0, t = 0]
-	raddr = 0, waddr = 0, rreg = 2, wreg = 1
-```
-
-informs that the instruction reads two registers and writes into one register; there are no memory reads/writes.
-
-### Inject fault at instruction
-
-```
-pin -t bfi.so -cmd WREG -trigger 89279 -- ./myprogram
-```
-
-The command injects one bit-flip into register that was written into (WREG fault). Sample output:
-
-```
-[.:    0, IP = 0x400798, i = 89280, wa = 0, ra = 0, rr = 0, wr = 0, it = 0, t = 0]
-	at ip 0x40079a, eax = 0x3039, eax' = 0x3038
-```
-
-Here register *eax* was corrupted at instruction 89280. Notice that the fault was injected not at 89279 instruction as we requested: BFI injects the fault at the first suitable instruction *on or after* the requested instruction.
-
-### Information about function invocations and fault injections can be combined
-
-```
-pin -f bfi.so -m foobar -cmd WREG -trigger 89279 -- ./myprogram
-```
-
-This lists all invocations of *foobar* and also injects a WREG fault.
-
-### Inject at instruction address (not at *instruction number* as in previous examples)
-
-```
-pin -t bfi.so -cmd WREG -ip 0x40079a -trigger 2 -ttype IT -- ./myprogram
-```
-
-This command injects the fault when the instruction on address 0x40079a is executed for the second time.
-
-### Corrupt several bits (not *the lowest bit* as in previous examples)
-
-```
-pin -t bfi.so -cmd WREG -mask 0xFF -ip 0x40079a -trigger 2 -ttype IT -- ./myprogram
-```
-
-This will bit-flip 8 lowest bits; sample output:
-
-```
-[.:    0, IP = 0x400798, i = 89280, wa = 0, ra = 0, rr = 0, wr = 0, it = 0, t = 0]
-	at ip 0x40079a, eax = 0x3039, eax' = 0x30c6
-```
-
-### Starting BFI breakpointing after fault inside gdb
-
-Start Pin with the `-appdebug` option:
-
-```
-pin -appdebug -t bfi.so [options] -- ./program
-```
+  `pin -appdebug -t fastfi.so [options] -- test_program`
 
 You should get an output such as:
-```
-Application stopped until continued from debugger.
-Start GDB, then issue this command at the (gdb) prompt:
-  target remote :60940
-```
 
-Now start gdb with `program` as file:
-```
-gdb ./program
-```
+  ```
+  Application stopped until continued from debugger.
+  Start GDB, then issue this command at the (gdb) prompt:
+    target remote :60940
+  ```
 
-And connect to pin issuing the command `target remote :60940`.
+Now start gdb with `test_program` as file:
+
+  `gdb test_program`
+
+Connect to the running instance of Pin by issuing the command `target remote :60940`.
+For more details, please refer to the [Pin documentation](https://software.intel.com/sites/landingpage/pintool/docs/76991/Pin/html/index.html#APPDEBUG).
+
+
+## Bug reports and suggestion
+
+Should you need to debug the FastFI plug-in itself (rather than a test program running under Pin's/FastFI's control), please also refer to the [Pin documentation](https://software.intel.com/sites/landingpage/pintool/docs/76991/Pin/html/index.html#DEBUGGING).
+Alternatively, send a bug report to norman.rink@tu-dresden.de.
+
+Suggestions for further development and improvement should also be submitted to norman.rink@tu-dresden.de.
+
+
