@@ -1,4 +1,4 @@
-# FastFI: fast fault injector
+# FastFI: Fast Fault Injector
 
 FastFI is a plug-in for [Intel's Pin Tool](https://software.intel.com/en-us/articles/pin-a-dynamic-binary-instrumentation-tool) which implements fault injection into a running program.
 FastFI is derived from the [BFI bit-flip injector](https://bitbucket.org/db7/bfi), and so is this readme file.
@@ -111,83 +111,37 @@ The meanings of values are as follows:
 
   9. `cmd`: A space-separated list of kinds of faults which can be injected at the current instruction.
 
-For operating the FastFI plug-in only the values of the keys `ip`, `iteration`, and `cmd` are relevant.
+Only the values of the keys `ip`, `iteration`, and `cmd` are relevant for operating the FastFI plugin.
 The remaining key-value pairs are useful for debugging.
 
+To inject a fault into the execution of the `test_function`, one should pick an instruction address _addr_ and iteration _k_ from the `-info` output.
+One should also choose a _kind_ of fault from the ones listed as the values of `cmd`.
+Then, a valid command line for injecting a fault will look like this:
 
-To inject a fault into a running program, FastFI must be given a list of `[options]` which specify the location and kind of the fault which is to be injected.
+  `pin -t fastfi.so -m test_function -ip _addr_ -it _k_ -cmd _kind_ -mask _pattern_ -- test_program`
 
+Bits are then flipped by xor-ing _pattern_ into the location implicitly specified by _kind_.
+When faults can be injected into more then one location, e.g. when multiple registers are read or written by the instruction at _addr_, one of the following command line arguments can be used:
 
-The command is valid only if the instruction address is inside the function `test_function`.
-
-the address of an instruction where the fault is to be injected.
-Henceforth we refer to this address as the `ip` (for _instruction pointer_).
-Since the same `ip` may be visited multiple times during program execution, FastFI further requires an _iteration_ to uniquely identify the dynamic instruction at which the fault is to be injected.
-If the instruction at address `ip` is executed _n_ times, then the iteration must be an integer _k_ such that 1 <= _k_ <= n.
-The fault is then injected when the instruction at `ip` is executed for the _k_-th time.
-
-
-Besides injecting faults, BFI can perform other *commands* when at a trigger
-instruction, for example, it migh simply to print the trigger address and
-source-code information such as file and line number.  To select a fault type
-or another command, use the command knob, e.g., `-cmd CF` injects a
-control-flow fault.
-
-The command knob supports the fault types above and the following further
-commands:
-
-- NONE : prints the summary at the end of the execution (default). 
-- FIND : shows information for a given trigger instruction.
-
-Trigger instructions can be selected in several ways.  The default selection
-is by counting the number of executed instructions and setting the N-th
-executed instruction to be the trigger using `-trigger N`.
-
-As concrete example, to inject a control-flow fault in `ls` at the 10000th
-exectued instruction, type:
-
-```
-pin -t bfi.so -trigger 10000 -cmd CF -- ls
-```
-
-Some commands cannot be executed at some instructions, for example, if an
-instructions does not read from memory, no fault can corrupt a memory location
-at that instruction.  The trigger is then the first instruction after the N-th
-executed instruction at which the command can be executed.
-
-A specific instruction in the code can be selected with the `-ip IP` knob. In
-this case, BFI executes the desired command at the first occurrence of IP
-after the N-th executed instruction. (See examples below.)
-
-BFI supports other forms of counting for selecting the trigger via the trigger
-type knob `-ttype TRIGGER_TYPE`.  Besides the basic instruction counting,
-another useful trigger type is the iteration counting `IT`, which is to be
-used in conjunction with `-ip`.  If the trigger is selected with iteration
-counting, the N-th execution of IP is the trigger for the command.  The
-complete sequence of parameters is 
-
-```
-pin -t bfi.so -trigger N -ttype IT -ip IP -- program
-```
-
-The complete list of trigger types follows.
-
-- IN : counts the number of executed instructions (default).
-- RA : counts the number of read addresses. If an instruction reads from
-       multiple addresses, they are all counted.
-- WA : counts the number of written addresses. If an instruction writes to
-       multiple addresses, they are all counted.
-- RR : counts the number of read registers. (multiple per instr.)
-- WR : counts the number of written registers. (may be multiple per instr.)
-- IT : counts the number of iterations the instruction pointer contains a
-       given value (via `-ip`).
+  1. `-sel` specifies an index into the list of location where faults can be injected.
+     Indices start at `0`.
+  2. `-seed` specifies the seed for randomly selecting the location where the fault is injected.
 
 
-### List all supported knobs (command-line arguments)
+### Notes
 
-```
-pin -t bfi.so -h -- ls
-```
+A list of command line options can be printed to the terminal by specifying the option `-h`:
+
+  `pin -t fastfi.so -h -- test_program`
+
+However, bear in mind that some of the listed command line options may be artifacts from BFI and may therefore not be correctly supported.
+Generally, only the command line options discussed in this readme file can be assummed to work correctly.
+
+The reason for the name "FastFI" is that the runtime of fault-injection experiments is significantly reduced compared to BFI.
+This is made possible by dynamically instrumenting only the instruction at the address specified by `-ip`.
+As a consequence, the command line option `-ip` must always be speficied for fault injection.
+This means that FastFI sacrifices some of the flexibility of BFI, which explains why some of BFI's command line options are not supported by FastFI.
+However, the combination of the `-ip` and `-iteration` command line arguments enable full control over the location of where a fault is injected. 
 
 
 ### Debugging test programs under the control of FastFI (from BFI documentation)
