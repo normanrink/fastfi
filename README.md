@@ -3,20 +3,20 @@
 FastFI is a plug-in for [Intel's Pin Tool](https://software.intel.com/en-us/articles/pin-a-dynamic-binary-instrumentation-tool) which implements fault injection into a running program.
 FastFI is derived from the [BFI bit-flip injector](https://bitbucket.org/db7/bfi), and so is this readme file.
 Please also refer to BFI's documentation.
-The key motivation of developing FastFI was to improve the runtime of fault-injection experiments while retaining fine-grain control over injected fault.
+The key motivation of developing FastFI was to improve the runtime of fault-injection experiments while retaining fine-grain control over injected faults.
 
 
 ## Getting started
 
 To build the FastFI plug-in, simply run `make` in the source directory.
-The `make` command requires that the environment variable `PIN_ROOT` be set to the directory where the Pin Tool's executable lives.
-After successfully building the plug-in, the Pin Tool can be run as follows: 
+The `make` command requires that the environment variable `PIN_ROOT` be set to the directory where Pin's executable lives.
+After successfully building the plug-in, Pin can be run as follows: 
 
   `pin -t fastfi.so [options] -- test_program`
 
 When the list of `[options]` is empty, the plug-in will not do anything.
 Most importantly, no faults will be injected.
-The above command will simply produce a short log on the terminal.
+Without any options the above command will simply produce a short log on the terminal.
 This behaviour is inherited from BFI.
 
 
@@ -33,13 +33,18 @@ A fault is injected by flipping bits in one of the following locations:
 The following kinds of faults (_commands_ in BFI's terminology) map to the above locations:
 
   - `CF`: a _control-flow_ fault is modelled by flipping bits in the instruction pointer (i.e. the `eip`/`rip` register) before _Ins_ is executed.
-  - `RREG`: bit-flips in a register before the register's value is read _Ins_.
+  This means that _Ins_ is in fact not executed.
+  Instead the instruction at the new value of `eip`/`rip` will be executed.
+  - `RREG`: bit-flips in a register before the register's value is read by _Ins_.
   - `WREG`: bit-flips in a register after the register's value has been written by _Ins_.
   - `RVAL`: bit-flips in a memory location before the location's value is read by _Ins_.
   - `WVAL`: bit-flips in a memory location after the location's value has been written by _Ins_.
   - `RADDR`: bit-flips in an address on the address bus before _Ins_ reads from the address.
   - `WADDR`: bit-flips in an address on the address bus before _Ins_ writes to the address.
-  - `TXT`: bit-flips in the instruction opcoe of _Ins_.
+  - `TXT`: bit-flips in the instruction opcode of _Ins_.
+  This means that _Ins_ will not be executed.
+  Instead the modified opcode will be excuted.
+  (Note that, due to the variable length of x86 opcodes, a `TXT` fault will generally also affect opcodes following _Ins_.)
 
 A typical fault injection command will look like this:
 
@@ -53,12 +58,12 @@ As another example, let's look at injecting a fault into one of _Ins_'s input re
 
   `pin -t fastfi.so -m test_function -ip 0x400750 -it 1 -cmd RREG -mask 0x1 -- test_program`
 
-This will xor the mask '0x1' into one of the first of _Ins_'s input registers.
-If _Ins_ reads from more than one register, one can select the register for fault injection with the `-sel` command line option, e.g.
+This will xor the mask `0x1` into the first of _Ins_'s input registers.
+If _Ins_ reads from more than one register, the register for fault injection can be selected with the `-sel` command line option, e.g.
 
   `pin -t fastfi.so -m test_function -ip 0x400750 -it 1 -cmd RREG -sel 1 -mask 0x1 -- test_program`
 
-will inject into the second of _Ins_'s input register.
+This will inject into the second of _Ins_'s input registers.
 Alternatively, if the option `-seed` is given, a register will be chosen randomly, e.g.
 
   `pin -t fastfi.so -m test_function -ip 0x400750 -it 1 -cmd RREG -seed 0xdeadbeef -mask 0x1 -- test_program`
@@ -66,7 +71,7 @@ Alternatively, if the option `-seed` is given, a register will be chosen randoml
 The possible command line options of FastFI are discussed in more detail in the next section.
 
 
-## Typical FastFI workflow 
+## Typical FastFI workflow
 
 FastFI is designed to study the response of individual functions to faults.
 Hence the function of interest must be specified as one of the command line `[options]`:
@@ -87,45 +92,45 @@ The first two lines of output may look like this:
   ```
 
 Each line is a list of key-value pairs corresponding to one assembly instruction.
-Key-value pairs separated by `--`, and keys are separated from values by a colon `:`.
+Key-value pairs are separated by `--`, and keys are separated from values by a colon.
 The meanings of values are as follows:
 
-  1. `ip`: The address of the assembly instruction (viz. _instruction poiner_).
+  1. `ip`: the address of the assembly instruction (viz. _instruction poiner_).
   
-  2. `interation`: The number of times this instruction has already been executed.
+  2. `interation`: the number of times this instruction has already been executed.
 
-  3. `assembly`: The assembly code of the current instruction.
+  3. `assembly`: the assembly code of the current instruction.
 
-  4. `read`: A space-separated list of registers read by the current instruction.
+  4. `read`: a space-separated list of registers read by the current instruction.
      (Note that this includes implicit reads such as reading the stack pointer `rsp` during a `push` instruction.)
 
-  5. `write`: A space-separated list of registers written by the current instruction.
+  5. `write`: a space-separated list of registers written by the current instruction.
      (Note that this includes implicit writes such as writing the stack pointer `rsp` during a `push` instruction.)
 
-  6. `fallthrough`: A flag indicating whether the current instruction has a fall-through control path.
+  6. `fallthrough`: indicates whether the current instruction has a fall-through control path.
      Typical instructions without a fall-through path are unconditional jumps and returns.
 
-  7. `branch-or-call`: A flag which indicates whether the current instruction is either a branch or function call.
+  7. `branch-or-call`: indicates whether the current instruction is either a branch or function call.
 
-  8. `return`: A flag which indicates whether the current instruction is a return instruction.
+  8. `return`: indicates whether the current instruction is a return instruction.
 
-  9. `cmd`: A space-separated list of kinds of faults which can be injected at the current instruction.
+  9. `cmd`: a space-separated list of kinds of faults which can be injected at the current instruction.
 
-Only the values of the keys `ip`, `iteration`, and `cmd` are relevant for operating the FastFI plugin.
+Only the values of the keys `ip`, `iteration`, and `cmd` are relevant for operating the FastFI plug-in.
 The remaining key-value pairs are useful for debugging.
 
-To inject a fault into the execution of the `test_function`, one should pick an instruction address _addr_ and iteration _k_ from the `-info` output.
-One should also choose a _kind_ of fault from the ones listed as the values of `cmd`.
+To inject a fault into the execution of the `test_function`, one must pick an instruction address `addr` and iteration `k` from the `-info` output.
+One must also choose a `kind` of fault from the ones listed as the values of `cmd`.
 Then, a valid command line for injecting a fault will look like this:
 
-  `pin -t fastfi.so -m test_function -ip _addr_ -it _k_ -cmd _kind_ -mask _pattern_ -- test_program`
+  `pin -t fastfi.so -m test_function -ip addr -it k -cmd kind -mask pattern -- test_program`
 
-Bits are then flipped by xor-ing _pattern_ into the location implicitly specified by _kind_.
-When faults can be injected into more then one location, e.g. when multiple registers are read or written by the instruction at _addr_, one of the following command line arguments can be used:
+Bits are then flipped by xor-ing `pattern` into the location implicitly specified by `kind`.
+When faults can be injected into more then one location, e.g. when multiple registers are read or written by the instruction at `addr`, one of the following command line arguments can be used:
 
-  1. `-sel` specifies an index into the list of location where faults can be injected.
+  1. `-sel`: specifies an index into the list of locations where faults can be injected.
      Indices start at `0`.
-  2. `-seed` specifies the seed for randomly selecting the location where the fault is injected.
+  2. `-seed`: specifies the seed for randomly selecting the location where the fault is injected.
 
 
 ### Notes
